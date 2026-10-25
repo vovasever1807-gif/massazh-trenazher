@@ -85,6 +85,7 @@ ul.review li{margin:.5rem 0}
       <div id="mock-time" role="group" aria-labelledby="mock-time-label">
         <p class="small" id="mock-time-label">Время</p>
         <button type="button" class="opt" data-time="60" aria-pressed="true">1 час<span class="tag">как на настоящем экзамене, по истечении — итог автоматически</span></button>
+        <button type="button" class="opt" data-time="120" aria-pressed="false">2 часа<span class="tag">столько дают людям с нарушениями зрения</span></button>
         <button type="button" class="opt" data-time="0" aria-pressed="false">Без ограничения времени<span class="tag">те же вопросы вперемешку, но без таймера</span></button>
       </div>
     </div>
@@ -110,6 +111,7 @@ ul.review li{margin:.5rem 0}
     <p class="small" id="qhint"></p>
     <div id="opts" role="group" aria-labelledby="qstem"></div>
     <div class="row">
+      <button id="back" hidden>Назад</button>
       <button class="primary" id="answer">Ответить</button>
       <button id="next" hidden>Дальше</button>
       <span class="spacer"></span>
@@ -136,7 +138,7 @@ var DATA = JSON.parse(document.getElementById('data').textContent);
 var CATS = {highest:"Высшая", first:"Первая", second:"Вторая"};
 var state = {queue:[], idx:0, answers:[], mode:'train', cat:'highest', block:'0',
              sel:[], answered:false, startTime:0,
-             mockCnt:60, mockTimed:true, deadline:0, timerId:0, lastAlert:''};
+             mockCnt:60, mockMinutes:60, deadline:0, timerId:0, lastAlert:''};
 var MODE_NAME = {train:'тренировка', exam:'экзамен', mock:'как на настоящем экзамене'};
 
 function $(id){ return document.getElementById(id); }
@@ -210,7 +212,7 @@ function start(){
     else { var i0=parseInt(v,10)||0; state.queue = list.slice(i0, i0+100); }
   }
   if (!state.queue.length) return;
-  state.idx = 0; state.answers = []; state.startTime = Date.now(); state.lastAlert = '';
+  state.idx = 0; state.answers = new Array(state.queue.length); state.startTime = Date.now(); state.lastAlert = '';
   $('screen-start').hidden = true;
   $('screen-quiz').hidden = false;
   $('screen-result').hidden = true;
@@ -233,8 +235,8 @@ function startTimer(){
   $('timer').hidden = true;
   $('timer').textContent = '';
   $('timer-alert').textContent = '';
-  if (state.mode !== 'mock' || !state.mockTimed) return;
-  state.deadline = Date.now() + 3600000;
+  if (state.mode !== 'mock' || !state.mockMinutes) return;
+  state.deadline = Date.now() + state.mockMinutes*60000;
   $('timer').hidden = false;
   tickTimer();
   state.timerId = setInterval(tickTimer, 1000);
@@ -259,7 +261,8 @@ function tickTimer(){
 
 function renderQuestion(){
   state.answered = false;
-  state.sel = [];
+  var prev = state.answers[state.idx];
+  state.sel = prev ? prev.sel.slice() : [];
   var q = state.queue[state.idx];
   var total = state.queue.length;
   $('progress').textContent = 'Вопрос ' + (state.idx+1) + ' из ' + total + ' · ' + MODE_NAME[state.mode];
@@ -275,7 +278,7 @@ function renderQuestion(){
     btn.type = 'button';
     btn.className = 'opt';
     btn.setAttribute('data-i', i);
-    btn.setAttribute('aria-pressed', 'false');
+    btn.setAttribute('aria-pressed', state.sel.indexOf(i) >= 0 ? 'true' : 'false');
     btn.setAttribute('aria-label', (i+1) + '. ' + o.t);
     var num = document.createElement('span');
     num.className = 'num';
@@ -292,6 +295,7 @@ function renderQuestion(){
   fb.hidden = true; fb.className = 'feedback'; fb.textContent = '';
   $('answer').hidden = false; $('answer').disabled = false;
   $('next').hidden = true;
+  $('back').hidden = state.idx === 0 || state.mode === 'train';
   $('next').textContent = (state.idx === state.queue.length-1) ? 'К результату' : 'Дальше';
   $('qstem').focus();
 }
@@ -334,7 +338,7 @@ function answer(){
   var q = state.queue[state.idx];
   var correctIdx = q.o.map(function(o,i){ return o.c ? i : -1; }).filter(function(i){ return i>=0; });
   var ok = state.sel.length===correctIdx.length && state.sel.every(function(i){ return correctIdx.indexOf(i)>=0; });
-  state.answers.push({q:q, sel:state.sel.slice(), ok:ok});
+  state.answers[state.idx] = {q:q, sel:state.sel.slice(), ok:ok};
 
   if (state.mode === 'train'){
     q.o.forEach(function(o,i){
@@ -369,8 +373,9 @@ function showResult(timeUp){
   timeUp = timeUp === true;
   clearTimer();
   if (timeUp) $('timer').hidden = true;
-  var correct = state.answers.filter(function(a){ return a.ok; }).length;
-  var answered = state.answers.length;
+  var done = state.answers.filter(Boolean);
+  var correct = done.filter(function(a){ return a.ok; }).length;
+  var answered = done.length;
   var total = state.mode === 'train' ? answered : Math.max(answered, state.queue.length);
   var pct = total ? Math.round(correct/total*100) : 0;
   var secs = Math.round((Date.now()-state.startTime)/1000);
@@ -382,7 +387,7 @@ function showResult(timeUp){
     html += '<p><strong>Порог экзамена: 70%.</strong> ' + (pct >= 70 ? 'Пройдено.' : 'Не пройдено — нужно ещё позаниматься в тренировке.') + '</p>';
   }
   if (state.mode !== 'train'){
-    var wrong = state.answers.filter(function(a){ return !a.ok; });
+    var wrong = done.filter(function(a){ return !a.ok; });
     if (wrong.length){
       html += '<h3>Разбор ошибок</h3><ul class="review">';
       wrong.forEach(function(a){
@@ -396,7 +401,7 @@ function showResult(timeUp){
     try {
       var seen = JSON.parse(localStorage.getItem('mm_seen')||'{}');
       var set = seen[state.cat] || [];
-      state.answers.forEach(function(a){ if (set.indexOf(a.q.id)<0) set.push(a.q.id); });
+      done.forEach(function(a){ if (set.indexOf(a.q.id)<0) set.push(a.q.id); });
       seen[state.cat] = set;
       localStorage.setItem('mm_seen', JSON.stringify(seen));
     } catch(e){}
@@ -439,13 +444,14 @@ all('button[data-cnt]').forEach(function(b){
 all('button[data-time]').forEach(function(b){
   b.addEventListener('click', function(){
     press(b.parentNode, b);
-    state.mockTimed = b.getAttribute('data-time') === '60';
+    state.mockMinutes = parseInt(b.getAttribute('data-time'),10) || 0;
   });
 });
 
 $('start').addEventListener('click', start);
 $('answer').addEventListener('click', answer);
 $('next').addEventListener('click', nextQuestion);
+$('back').addEventListener('click', function(){ if (state.idx > 0){ state.idx--; renderQuestion(); } });
 $('finish').addEventListener('click', showResult);
 $('again').addEventListener('click', function(){ $('screen-result').hidden=true; $('screen-start').hidden=false; renderCounts(); renderBlocks(); });
 $('to-start').addEventListener('click', function(){ $('screen-result').hidden=true; $('screen-start').hidden=false; renderCounts(); renderBlocks(); });
