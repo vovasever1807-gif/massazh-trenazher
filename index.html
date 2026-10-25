@@ -71,9 +71,25 @@ ul.review li{margin:.5rem 0}
       <p class="group-title" id="mode-label">Режим</p>
       <button type="button" class="opt" data-mode="train" aria-pressed="true">Тренировка<span class="tag">ответ проверяется сразу: верно — зелёным, ошибка — красным</span></button>
       <button type="button" class="opt" data-mode="exam" aria-pressed="false">Экзамен<span class="tag">без подсказок, разбор в конце</span></button>
+      <button type="button" class="opt" data-mode="mock" aria-pressed="false">Как на настоящем экзамене<span class="tag">вопросы вперемешку, таймер, итог в процентах</span></button>
     </div>
 
-    <div class="group" role="group" aria-labelledby="block-label">
+    <div class="group" id="mock-group" hidden>
+      <p class="group-title" id="mock-label">Параметры экзамена</p>
+      <div id="mock-cnt" role="group" aria-labelledby="mock-cnt-label">
+        <p class="small" id="mock-cnt-label">Сколько вопросов</p>
+        <button type="button" class="opt" data-cnt="60" aria-pressed="true">60 вопросов<span class="tag">как было на первичной аккредитации</span></button>
+        <button type="button" class="opt" data-cnt="80" aria-pressed="false">80 вопросов<span class="tag">как на аттестации по сестринскому делу</span></button>
+        <button type="button" class="opt" data-cnt="all" aria-pressed="false">Все вопросы<span class="tag" id="mock-cnt-all"></span></button>
+      </div>
+      <div id="mock-time" role="group" aria-labelledby="mock-time-label">
+        <p class="small" id="mock-time-label">Время</p>
+        <button type="button" class="opt" data-time="60" aria-pressed="true">1 час<span class="tag">как на настоящем экзамене, по истечении — итог автоматически</span></button>
+        <button type="button" class="opt" data-time="0" aria-pressed="false">Без ограничения времени<span class="tag">те же вопросы вперемешку, но без таймера</span></button>
+      </div>
+    </div>
+
+    <div class="group" id="block-group" role="group" aria-labelledby="block-label">
       <p class="group-title" id="block-label">Блок вопросов</p>
       <div id="blocks"></div>
     </div>
@@ -88,6 +104,8 @@ ul.review li{margin:.5rem 0}
   <section id="screen-quiz" hidden>
     <div class="bar" aria-hidden="true"><div id="bar-fill"></div></div>
     <p class="small" id="progress" aria-live="polite"></p>
+    <p class="small" id="timer" aria-live="off" hidden></p>
+    <p class="small" id="timer-alert" aria-live="polite"></p>
     <h2 id="qstem" tabindex="-1"></h2>
     <p class="small" id="qhint"></p>
     <div id="opts" role="group" aria-labelledby="qstem"></div>
@@ -117,7 +135,9 @@ ul.review li{margin:.5rem 0}
 var DATA = JSON.parse(document.getElementById('data').textContent);
 var CATS = {highest:"Высшая", first:"Первая", second:"Вторая"};
 var state = {queue:[], idx:0, answers:[], mode:'train', cat:'highest', block:'0',
-             sel:[], answered:false, startTime:0};
+             sel:[], answered:false, startTime:0,
+             mockCnt:60, mockTimed:true, deadline:0, timerId:0, lastAlert:''};
+var MODE_NAME = {train:'тренировка', exam:'экзамен', mock:'как на настоящем экзамене'};
 
 function $(id){ return document.getElementById(id); }
 function byCat(cat){ return DATA.filter(function(q){ return q.cat===cat; }); }
@@ -158,6 +178,9 @@ function renderBlocks(){
   allBtn.innerHTML='Все вопросы<span class="tag">'+total+' шт.</span>';
   wrap.appendChild(allBtn);
 
+  var tagAll = $('mock-cnt-all');
+  if (tagAll) tagAll.textContent = total + ' шт., вперемешку';
+
   all('button', wrap).forEach(function(b){
     b.addEventListener('click', function(){
       press(wrap, b);
@@ -166,17 +189,72 @@ function renderBlocks(){
   });
 }
 
+function shuffle(a){
+  for (var i=a.length-1; i>0; i--){
+    var j = Math.floor(Math.random()*(i+1));
+    var t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+
 function start(){
   var list = byCat(state.cat).slice();
-  var v = state.block;
-  if (v==='all') state.queue = list;
-  else { var i0=parseInt(v,10)||0; state.queue = list.slice(i0, i0+100); }
+  if (state.mode === 'mock'){
+    shuffle(list);
+    list.forEach(function(q){ shuffle(q.o); });
+    var cnt = state.mockCnt ? Math.min(state.mockCnt, list.length) : list.length;
+    state.queue = list.slice(0, cnt);
+  } else {
+    var v = state.block;
+    if (v==='all') state.queue = list;
+    else { var i0=parseInt(v,10)||0; state.queue = list.slice(i0, i0+100); }
+  }
   if (!state.queue.length) return;
-  state.idx = 0; state.answers = []; state.startTime = Date.now();
+  state.idx = 0; state.answers = []; state.startTime = Date.now(); state.lastAlert = '';
   $('screen-start').hidden = true;
   $('screen-quiz').hidden = false;
   $('screen-result').hidden = true;
+  startTimer();
   renderQuestion();
+}
+
+function clearTimer(){
+  if (state.timerId){ clearInterval(state.timerId); state.timerId = 0; }
+}
+
+function fmtLeft(ms){
+  if (ms < 0) ms = 0;
+  var s = Math.ceil(ms/1000), m = Math.floor(s/60), r = s%60;
+  return m + ' мин ' + (r<10 ? '0' : '') + r + ' с';
+}
+
+function startTimer(){
+  clearTimer();
+  $('timer').hidden = true;
+  $('timer').textContent = '';
+  $('timer-alert').textContent = '';
+  if (state.mode !== 'mock' || !state.mockTimed) return;
+  state.deadline = Date.now() + 3600000;
+  $('timer').hidden = false;
+  tickTimer();
+  state.timerId = setInterval(tickTimer, 1000);
+}
+
+function tickTimer(){
+  var left = state.deadline - Date.now();
+  if (left <= 0){
+    clearTimer();
+    $('timer').textContent = 'Время вышло.';
+    $('timer-alert').textContent = 'Время вышло. Показываю итог.';
+    showResult(true);
+    return;
+  }
+  $('timer').textContent = 'Осталось: ' + fmtLeft(left);
+  var mins = Math.ceil(left/60000);
+  if ((mins === 10 || mins === 5 || mins === 1) && state.lastAlert !== mins){
+    state.lastAlert = mins;
+    $('timer-alert').textContent = 'Осталось ' + mins + ' мин.';
+  }
 }
 
 function renderQuestion(){
@@ -184,7 +262,7 @@ function renderQuestion(){
   state.sel = [];
   var q = state.queue[state.idx];
   var total = state.queue.length;
-  $('progress').textContent = 'Вопрос ' + (state.idx+1) + ' из ' + total + (state.mode==='train' ? ' · тренировка' : ' · экзамен');
+  $('progress').textContent = 'Вопрос ' + (state.idx+1) + ' из ' + total + ' · ' + MODE_NAME[state.mode];
   $('bar-fill').style.width = ((state.idx)/total*100).toFixed(1)+'%';
   $('qstem').textContent = q.q;
   var hint = q.n > 1 ? ('Выберите ' + q.n + ' правильных ответа') : 'Выберите один правильный ответ';
@@ -287,15 +365,23 @@ function nextQuestion(){
   renderQuestion();
 }
 
-function showResult(){
+function showResult(timeUp){
+  timeUp = timeUp === true;
+  clearTimer();
+  if (timeUp) $('timer').hidden = true;
   var correct = state.answers.filter(function(a){ return a.ok; }).length;
-  var total = state.answers.length;
+  var answered = state.answers.length;
+  var total = state.mode === 'train' ? answered : Math.max(answered, state.queue.length);
   var pct = total ? Math.round(correct/total*100) : 0;
   var secs = Math.round((Date.now()-state.startTime)/1000);
   var mins = Math.floor(secs/60), rem = secs%60;
 
   var html = '<p><strong>Верно: ' + correct + ' из ' + total + ' (' + pct + '%).</strong> Время: ' + mins + ' мин ' + rem + ' с.</p>';
-  if (state.mode==='exam'){
+  if (timeUp) html += '<p><strong>Время вышло.</strong> Отвечено ' + answered + ' из ' + total + '.</p>';
+  if (state.mode==='mock'){
+    html += '<p><strong>Порог экзамена: 70%.</strong> ' + (pct >= 70 ? 'Пройдено.' : 'Не пройдено — нужно ещё позаниматься в тренировке.') + '</p>';
+  }
+  if (state.mode !== 'train'){
     var wrong = state.answers.filter(function(a){ return !a.ok; });
     if (wrong.length){
       html += '<h3>Разбор ошибок</h3><ul class="review">';
@@ -336,6 +422,24 @@ all('button[data-mode]').forEach(function(b){
   b.addEventListener('click', function(){
     press(b.parentNode, b);
     state.mode = b.getAttribute('data-mode');
+    var isMock = state.mode === 'mock';
+    $('mock-group').hidden = !isMock;
+    $('block-group').hidden = isMock;
+  });
+});
+
+all('button[data-cnt]').forEach(function(b){
+  b.addEventListener('click', function(){
+    press(b.parentNode, b);
+    var v = b.getAttribute('data-cnt');
+    state.mockCnt = v === 'all' ? 0 : parseInt(v,10);
+  });
+});
+
+all('button[data-time]').forEach(function(b){
+  b.addEventListener('click', function(){
+    press(b.parentNode, b);
+    state.mockTimed = b.getAttribute('data-time') === '60';
   });
 });
 
