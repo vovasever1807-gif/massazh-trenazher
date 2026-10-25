@@ -1,5 +1,5 @@
 /* Офлайн-кэш тренажёра. Стратегия: сеть сначала, кэш — если сети нет. */
-var CACHE = 'massazh-trainer-v1';
+var CACHE = 'massazh-trainer-v2';
 var ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', function (e) {
